@@ -1,0 +1,11 @@
+[package]
+name = "pg-sse"
+version = "0.1.0"
+authors = ["Klein Florian <florian.klein@free.fr>"]
+edition = "2018"
+
+[dependencies]
+hyper-sse = "0.1.0"
+postgres = "0.15.2"
+fallible-iterator = "0.1.6"
+lazy_static = "1.4.0"
