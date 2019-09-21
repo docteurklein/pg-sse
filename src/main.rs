@@ -1,38 +1,67 @@
-
-#[macro_use] extern crate lazy_static;
-
-use hyper_sse::Server;
-use postgres::{Connection, TlsMode};
+use std::net::{TcpStream, TcpListener};
+use std::io::{Read, Write};
+use std::{thread, env};
+use r2d2::{Pool, PooledConnection};
+use r2d2_postgres::{TlsMode,PostgresConnectionManager};
 use fallible_iterator::FallibleIterator;
-use std::env;
 
-lazy_static! {
-    static ref SSE: Server<u8> = Server::new();
+
+fn handle_read(mut stream: &TcpStream) {
+    let mut buf = [0u8 ;4096];
+    match stream.read(&mut buf) {
+        Ok(_) => {
+            let req_str = String::from_utf8_lossy(&buf);
+            println!("{}", req_str);
+            },
+        Err(e) => println!("Unable to read stream: {}", e),
+    }
+}
+
+fn handle_write(mut stream: TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=UTF-8\r\n\r\n";
+    match stream.write(response) {
+        Ok(_) => println!("Response sent"),
+        Err(e) => println!("Failed sending response: {}", e),
+    }
+
+    let notifications = conn.notifications();
+    let mut it = notifications.blocking_iter();
+
+    while let Ok(Some(notification)) = it.next() {
+        stream.write(b"event:").unwrap();
+        stream.write(notification.channel.as_bytes()).unwrap();
+        stream.write(b"\n").unwrap();
+        stream.write(b"data:").unwrap();
+        stream.write(notification.payload.as_bytes()).unwrap();
+        stream.write(b"\n\n").unwrap();
+    }
+}
+
+fn handle_client(stream: TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
+    handle_read(&stream);
+    handle_write(stream, conn);
 }
 
 fn main() {
     let bind_addr = env::var("BIND_ADDR").expect("BIND_ADDR");
     let pg_dsn = env::var("PG_DSN").expect("PG_DSN");
-    SSE.spawn(bind_addr.parse().unwrap());
 
-    let auth_token = SSE.generate_auth_token(Some(0)).unwrap();
-    println!("http://{}/push/0?{}", bind_addr, auth_token);
+    let listener = TcpListener::bind(&bind_addr).unwrap();
+    println!("Listening for connections on {}", &bind_addr);
 
-    let conn = Connection::connect(pg_dsn, TlsMode::None).unwrap();
-    conn.execute(&format!("LISTEN {}", &"test"), &[]).unwrap();
-
-    let notifications = conn.notifications();
-    let mut it = notifications.blocking_iter();
-
-    #[allow(while_true)]
-    while true {
-        match it.next() {
-            Ok(Some(notification)) => {
-                println!("{:?}", notification);
-                SSE.push(0, &notification.channel, &notification.payload).ok();
-            },
-            Err(err) => eprintln!("Got err {:?}", err),
-            _ => panic!("Unexpected state.")
+    let pool = Pool::new(PostgresConnectionManager::new(pg_dsn, TlsMode::None).unwrap()).unwrap();
+    for stream in listener.incoming() {
+        let conn = pool.get().unwrap();
+        match stream {
+            Ok(stream) => {
+                thread::spawn(move || {
+                    conn.execute(&format!("LISTEN {}", &"test"), &[]).unwrap();
+                    handle_client(stream, conn)
+                });
+            }
+            Err(e) => {
+                println!("Unable to connect: {}", e);
+            }
         }
     }
 }

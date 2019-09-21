@@ -3,6 +3,33 @@ version: '3.7'
 services:
     postgres:
         image: postgres:latest
+        ports:
+            - '5432:5432'
+        environment:
+            POSTGRES_DB: api
+            POSTGRES_USER: api
 
-    pg-sse:
-        build: .
+    postgrest:
+        image: postgrest/postgrest
+        depends_on:
+            - postgres
+        ports:
+            - '3000:3000'
+        environment:
+            PGRST_DB_URI: postgres://api@postgres:5432/api
+            PGRST_DB_SCHEMA: api
+            PGRST_DB_ANON_ROLE: anon
+
+    swagger:
+        image: swaggerapi/swagger-ui
+        ports:
+          - "8080:8080"
+        environment:
+          API_URL: http://localhost:3000/
+
+    #pg-sse:
+    #    build: .
+    #    depends_on:
+    #        - postgres
+    #    ports:
+    #        - '3001:3000'
