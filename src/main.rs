@@ -2,25 +2,42 @@ use std::net::{TcpStream, TcpListener};
 use std::io::{Read, Write};
 use std::{thread, env};
 use r2d2::{Pool, PooledConnection};
-use r2d2_postgres::{TlsMode,PostgresConnectionManager};
+use r2d2_postgres::{TlsMode, PostgresConnectionManager};
 use fallible_iterator::FallibleIterator;
+use httparse::{EMPTY_HEADER, Request};
 
 
-fn handle_read(mut stream: &TcpStream) {
+fn handle_read(mut stream: &TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
     let mut buf = [0u8 ;4096];
     match stream.read(&mut buf) {
         Ok(_) => {
-            let req_str = String::from_utf8_lossy(&buf);
-            println!("{}", req_str);
-            },
+            let mut headers = [EMPTY_HEADER; 16];
+            let mut req = Request::new(&mut headers);
+            let result = req.parse(&buf).unwrap();
+            match req.path {
+                Some(path) => {
+                    let topic = crop(path, 1);
+                    println!("LISTEN {}", topic);
+                    conn.execute(&format!("LISTEN {}", topic), &[]).unwrap();
+                    handle_write(stream, conn)
+                },
+                None => {
+                    // must read more and parse again
+                }
+            }
+        },
         Err(e) => println!("Unable to read stream: {}", e),
     }
 }
 
-fn handle_write(mut stream: TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
+fn crop(string: &str, len: usize) -> String {
+    string.chars().skip(len).collect()
+}
+
+fn handle_write(mut stream: &TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
     let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=UTF-8\r\n\r\n";
     match stream.write(response) {
-        Ok(_) => println!("Response sent"),
+        Ok(_) => println!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=UTF-8\r\n\r\n"),
         Err(e) => println!("Failed sending response: {}", e),
     }
 
@@ -38,8 +55,7 @@ fn handle_write(mut stream: TcpStream, conn: PooledConnection<PostgresConnection
 }
 
 fn handle_client(stream: TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
-    handle_read(&stream);
-    handle_write(stream, conn);
+    handle_read(&stream, conn);
 }
 
 fn main() {
@@ -55,7 +71,6 @@ fn main() {
         match stream {
             Ok(stream) => {
                 thread::spawn(move || {
-                    conn.execute(&format!("LISTEN {}", &"test"), &[]).unwrap();
                     handle_client(stream, conn)
                 });
             }
