@@ -4,7 +4,7 @@ use std::{thread, env};
 use r2d2::{Pool, PooledConnection};
 use r2d2_postgres::{TlsMode, PostgresConnectionManager};
 use fallible_iterator::FallibleIterator;
-use httparse::{EMPTY_HEADER, Request};
+use httparse::{EMPTY_HEADER, Request, Header};
 use uuid::Uuid;
 
 
@@ -21,11 +21,8 @@ fn handle_read(mut stream: &TcpStream, conn: PooledConnection<PostgresConnection
                 }
                 Some(path) => {
                     let topic = crop(path, 1);
-                    //println!("{:?}", req.headers);
-                    //let lastSeenId = req.headers.into_iter().find(|header: &Header| {
-
-                    //});
-                    handle_sse_response(topic, stream, conn)
+                    let last_event_id = req.headers.into_iter().find(|header| header.name.to_lowercase() == "last-event-id");
+                    handle_sse_response(topic, stream, conn, last_event_id)
                 },
                 None => {
                     handle_error_response(stream)
@@ -40,11 +37,31 @@ fn crop(string: &str, len: usize) -> String {
     string.chars().skip(len).collect()
 }
 
-fn handle_sse_response(topic: String, mut stream: &TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
+fn handle_sse_response(topic: String, mut stream: &TcpStream, conn: PooledConnection<PostgresConnectionManager>, last_event_id: Option<&mut Header>) {
     let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
     match stream.write(response) {
         Ok(_) => println!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\n"),
         Err(e) => println!("Failed sending response: {}", e),
+    }
+
+    match last_event_id {
+        Some(header) => {
+            let id = Uuid::parse_str(&std::str::from_utf8(header.value).unwrap().to_string()).unwrap();
+            let get_missed_events = conn.query("select id, payload::text from api.events \
+                where name = $1 \
+                and added_at > (select added_at from api.events where id = $2)\
+                order by added_at asc", &[
+                    &topic,
+                    &id,
+                ]
+            ).unwrap();
+
+            for row in &get_missed_events {
+                send_event(stream, &topic, row.get("id"), row.get("payload"));
+            }
+
+        }
+        None => println!("no Last-Event-ID"),
     }
 
     println!("subscribing to topic: {}", topic);
@@ -56,21 +73,26 @@ fn handle_sse_response(topic: String, mut stream: &TcpStream, conn: PooledConnec
 
     while let Ok(Some(notification)) = it.next() {
         let id = Uuid::parse_str(&notification.payload).unwrap();
-        println!("sending event id: {}", id);
-
-        stream.write(b"event:").unwrap();
-        stream.write(notification.channel.as_bytes()).unwrap();
-        stream.write(b"\n").unwrap();
-
-        stream.write(b"id:").unwrap();
-        stream.write(id.hyphenated().to_string().as_bytes()).unwrap();
-        stream.write(b"\n").unwrap();
-
         let data: String = get_payload.query(&[&id]).unwrap().get(0).get("payload");
-        stream.write(b"data:").unwrap();
-        stream.write(data.as_bytes()).unwrap();
-        stream.write(b"\n\n").unwrap();
+
+        send_event(stream, &notification.channel, id, data);
     }
+}
+
+fn send_event(mut stream: &TcpStream, topic: &String, id: Uuid, data: String) {
+    println!("sending event id: {}", id);
+
+    stream.write(b"event:").unwrap();
+    stream.write(topic.as_bytes()).unwrap();
+    stream.write(b"\n").unwrap();
+
+    stream.write(b"id:").unwrap();
+    stream.write(id.hyphenated().to_string().as_bytes()).unwrap();
+    stream.write(b"\n").unwrap();
+
+    stream.write(b"data:").unwrap();
+    stream.write(data.as_bytes()).unwrap();
+    stream.write(b"\n\n").unwrap();
 }
 
 fn handle_error_response(mut stream: &TcpStream) {
