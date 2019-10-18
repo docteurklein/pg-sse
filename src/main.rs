@@ -5,6 +5,7 @@ use r2d2::{Pool, PooledConnection};
 use r2d2_postgres::{TlsMode, PostgresConnectionManager};
 use fallible_iterator::FallibleIterator;
 use httparse::{EMPTY_HEADER, Request};
+use uuid::Uuid;
 
 
 fn handle_read(mut stream: &TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
@@ -13,16 +14,21 @@ fn handle_read(mut stream: &TcpStream, conn: PooledConnection<PostgresConnection
         Ok(_) => {
             let mut headers = [EMPTY_HEADER; 16];
             let mut req = Request::new(&mut headers);
-            let result = req.parse(&buf).unwrap();
+            req.parse(&buf).unwrap();
             match req.path {
+                Some("/") => {
+                    handle_error_response(stream)
+                }
                 Some(path) => {
                     let topic = crop(path, 1);
-                    println!("LISTEN {}", topic);
-                    conn.execute(&format!("LISTEN {}", topic), &[]).unwrap();
-                    handle_write(stream, conn)
+                    //println!("{:?}", req.headers);
+                    //let lastSeenId = req.headers.into_iter().find(|header: &Header| {
+
+                    //});
+                    handle_sse_response(topic, stream, conn)
                 },
                 None => {
-                    // must read more and parse again
+                    handle_error_response(stream)
                 }
             }
         },
@@ -34,28 +40,45 @@ fn crop(string: &str, len: usize) -> String {
     string.chars().skip(len).collect()
 }
 
-fn handle_write(mut stream: &TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
-    let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=UTF-8\r\n\r\n";
+fn handle_sse_response(topic: String, mut stream: &TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
     match stream.write(response) {
-        Ok(_) => println!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=UTF-8\r\n\r\n"),
+        Ok(_) => println!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\n"),
         Err(e) => println!("Failed sending response: {}", e),
     }
 
+    println!("subscribing to topic: {}", topic);
+    conn.execute(&format!("LISTEN {}", topic), &[]).unwrap();
     let notifications = conn.notifications();
     let mut it = notifications.blocking_iter();
 
+    let get_payload = conn.prepare("select payload::text from api.events where id = $1").unwrap();
+
     while let Ok(Some(notification)) = it.next() {
+        let id = Uuid::parse_str(&notification.payload).unwrap();
+        println!("sending event id: {}", id);
+
         stream.write(b"event:").unwrap();
         stream.write(notification.channel.as_bytes()).unwrap();
         stream.write(b"\n").unwrap();
+
+        stream.write(b"id:").unwrap();
+        stream.write(id.hyphenated().to_string().as_bytes()).unwrap();
+        stream.write(b"\n").unwrap();
+
+        let data: String = get_payload.query(&[&id]).unwrap().get(0).get("payload");
         stream.write(b"data:").unwrap();
-        stream.write(notification.payload.as_bytes()).unwrap();
+        stream.write(data.as_bytes()).unwrap();
         stream.write(b"\n\n").unwrap();
     }
 }
 
-fn handle_client(stream: TcpStream, conn: PooledConnection<PostgresConnectionManager>) {
-    handle_read(&stream, conn);
+fn handle_error_response(mut stream: &TcpStream) {
+    let response = b"HTTP/1.1 400 Bad Request\r\n\r\n";
+    match stream.write(response) {
+        Ok(_) => println!("HTTP/1.1 400 Bad Request\n"),
+        Err(e) => println!("Failed sending response: {}", e),
+    }
 }
 
 fn main() {
@@ -66,12 +89,13 @@ fn main() {
     println!("Listening for connections on {}", &bind_addr);
 
     let pool = Pool::new(PostgresConnectionManager::new(pg_dsn, TlsMode::None).unwrap()).unwrap();
+
     for stream in listener.incoming() {
-        let conn = pool.get().unwrap();
         match stream {
             Ok(stream) => {
+                let conn = pool.get().unwrap();
                 thread::spawn(move || {
-                    handle_client(stream, conn)
+                    handle_read(&stream, conn)
                 });
             }
             Err(e) => {

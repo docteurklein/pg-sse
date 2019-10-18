@@ -31,7 +31,6 @@ create role anon nologin;
 grant usage on schema api to anon;
 grant select on api.events to anon;
 grant insert (name, version, payload) on api.events to anon;
-
 grant anon to api;
 
 commit;
