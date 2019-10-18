@@ -21,7 +21,14 @@ fn handle_read(mut stream: &TcpStream, conn: PooledConnection<PostgresConnection
                 }
                 Some(path) => {
                     let topic = crop(path, 1);
-                    let last_event_id = req.headers.into_iter().find(|header| header.name.to_lowercase() == "last-event-id");
+                    let last_event_id = {
+                        match req.headers.into_iter().find(|header| header.name.to_lowercase() == "last-event-id") {
+                            Some(header) => {
+                                Some(Uuid::parse_str(&std::str::from_utf8(header.value).unwrap().to_string()).unwrap())
+                            }
+                            None => None
+                        }
+                    };
                     handle_sse_response(topic, stream, conn, last_event_id)
                 },
                 None => {
@@ -37,7 +44,7 @@ fn crop(string: &str, len: usize) -> String {
     string.chars().skip(len).collect()
 }
 
-fn handle_sse_response(topic: String, mut stream: &TcpStream, conn: PooledConnection<PostgresConnectionManager>, last_event_id: Option<&mut Header>) {
+fn handle_sse_response(topic: String, mut stream: &TcpStream, conn: PooledConnection<PostgresConnectionManager>, last_event_id: Option<Uuid>) {
     let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
     match stream.write(response) {
         Ok(_) => println!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\n"),
@@ -45,8 +52,8 @@ fn handle_sse_response(topic: String, mut stream: &TcpStream, conn: PooledConnec
     }
 
     match last_event_id {
-        Some(header) => {
-            let id = Uuid::parse_str(&std::str::from_utf8(header.value).unwrap().to_string()).unwrap();
+        Some(id) => {
+            println!("Sending events after Last-Event-ID: {}", id);
             let get_missed_events = conn.query("select id, payload::text from api.events \
                 where name = $1 \
                 and added_at > (select added_at from api.events where id = $2)\
