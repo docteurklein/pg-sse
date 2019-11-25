@@ -1,6 +1,6 @@
 use std::net::{TcpStream, TcpListener};
-use std::{io, io::{Read, Write}};
-use std::{thread, env, env::{VarError}};
+use std::{io::{Read, Write}};
+use std::{thread, env};
 use r2d2::{Pool, PooledConnection};
 use r2d2_postgres::{TlsMode, PostgresConnectionManager};
 use fallible_iterator::FallibleIterator;
@@ -81,11 +81,11 @@ fn handle_sse_response(topic: String, mut stream: &TcpStream, conn: PooledConnec
     let notifications = conn.notifications();
     let mut it = notifications.blocking_iter();
 
-    let get_payload = conn.prepare("select id, name, policy::text, row_to_json(event)::text as data from api.events event where id = $1").unwrap();
+    let get_event = conn.prepare("select id, name, policy::text, row_to_json(event)::text as data from api.events event where id = $1").unwrap();
 
     while let Ok(Some(notification)) = it.next() {
         let id = Uuid::parse_str(&notification.payload).unwrap();
-        for row in &get_payload.query(&[&id]).unwrap() {
+        for row in &get_event.query(&[&id]).unwrap() {
             if can_view(auth_token, row.get("policy")) {
                 send_event(stream, row.get("name"), id, row.get("data"));
             }
@@ -159,22 +159,4 @@ fn main() {
             }
         }
     };
-}
-
-#[derive(Debug)]
-pub enum Error {
-    IoError(io::Error),
-    VarError(VarError),
-}
-
-impl From<VarError> for Error {
-    fn from(e: VarError) -> Error {
-        Error::VarError(e)
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Error {
-        Error::IoError(e)
-    }
 }
