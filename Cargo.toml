@@ -11,3 +11,8 @@ r2d2_postgres = "0.14.0"
 fallible-iterator = "0.1.6"
 httparse = "1.3.4"
 uuid = { version = "0.5", features = ["v4"]}
+biscuit = { git = "https://github.com/CleverCloud/biscuit-rust", rev = "ace89d79c7953c46f2b59b094f37c8a4b221201f" }
+rand = "0.6"
+base64 = "0.11.0"
+hex = "0.4.0"
+json = "0.12.0"

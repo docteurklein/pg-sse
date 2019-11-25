@@ -25,7 +25,9 @@ An http server sending postgres `LISTEN` payloads via Server-Sent-Events.
 
 ### listen to events
 
-	curl -i 0:3001/users -H 'Last-Event-ID: 4cd99657-3d81-4527-941f-8872317741ae'
+	# $BISCUIT can be one of the biscuits generated at server startup.
+
+	curl -i 0:3001/users -H 'Last-Event-ID: 4cd99657-3d81-4527-941f-8872317741ae' -H "authorization: $BISCUIT"
 
 
 ### publish events
@@ -33,8 +35,8 @@ An http server sending postgres `LISTEN` payloads via Server-Sent-Events.
 ```
 curl -i 0:3000/events -H 'content-type: application/json' -i -d '@-' <<-EOF
 	[
-		{"name": "user-registered", "topic": "users", "version": 2, "payload": {"name": "john"}},
-		{"name": "user-changed-password", "topic": "users", "version": 2, "payload": {"name": "john"}}
+		{"name": "user-registered", "topic": "users", "version": 2, "payload": {"name": "john"}, "policy": "view"},
+		{"name": "user-changed-password", "topic": "users", "version": 2, "payload": {"name": "john", "policy": null}}
 	]
 EOF
 ```
